@@ -1,12 +1,10 @@
 name: HardenEKS Scan
 
 on:
-  workflow_dispatch: {}  # 수동 실행
-  # schedule:
-  #   - cron: '0 18 * * *'  # (옵션) 매일 03:00 KST (18:00 UTC) 실행
+  workflow_dispatch: {}
 
 permissions:
-  id-token: write   # OIDC로 IAM 역할 가정
+  id-token: write
   contents: read
 
 env:
@@ -32,8 +30,7 @@ jobs:
             --region "${{ secrets.AWS_REGION }}" \
             --name   "${{ secrets.EKS_CLUSTER_NAME }}"
 
-      # Configure AWS credentials 다음에 배치
-      - name: Allow this runner IP to EKS API (temp)
+      - name: Allow this runner IP to EKS API
         id: allowapi
         shell: bash
         run: |
@@ -41,9 +38,9 @@ jobs:
           REGION='${{ secrets.AWS_REGION }}'
           CLUSTER='${{ secrets.EKS_CLUSTER_NAME }}'
 
-          # 1) 러너의 공인 IP
+          # 1) 러너의 공인 IP 획득
           MYIP="$(curl -fsSL ifconfig.me || curl -fsSL https://checkip.amazonaws.com || curl -fsSL https://api.ipify.org)"
-          MYIP="$(echo -n "$MYIP" | tr -d '\r\n')"   # 개행 제거
+          MYIP="$(echo -n "$MYIP" | tr -d '\r\n')"
           [[ "$MYIP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "Failed to detect runner IP"; exit 1; }
           MYCIDR="${MYIP}/32"
           echo "Runner IP: $MYCIDR"
@@ -76,7 +73,7 @@ jobs:
           python3 -m venv /tmp/.venv
           source /tmp/.venv/bin/activate
           pip install hardeneks
-          echo "/tmp/.venv/bin" >> "$GITHUB_PATH"   # 이후 스텝에서 hardeneks 바로 호출 가능
+          echo "/tmp/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run HardenEKS
         run: |
