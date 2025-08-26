@@ -32,6 +32,40 @@ jobs:
             --region "${{ secrets.AWS_REGION }}" \
             --name   "${{ secrets.EKS_CLUSTER_NAME }}"
 
+      # Configure AWS credentials 다음에 배치
+      - name: Allow this runner IP to EKS API (temp)
+        id: allowapi
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGION='${{ secrets.AWS_REGION }}'
+          CLUSTER='${{ secrets.EKS_CLUSTER_NAME }}'
+
+          # 1) 러너의 공인 IP
+          MYIP="$(curl -fsS ipconfig.kr || curl -fsS https://checkip.amazonaws.com || curl -fsS https://api.ipify.org)"
+          MYIP="$(echo -n "$MYIP" | tr -d '\r\n')"   # 개행 제거
+          [[ "$MYIP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "Failed to detect runner IP"; exit 1; }
+          MYCIDR="${MYIP}/32"
+          echo "Runner IP: $MYCIDR"
+
+          # 2) 현재 퍼블릭 허용 CIDR 조회
+          CUR_JSON=$(aws eks describe-cluster --region "$REGION" --name "$CLUSTER" \
+                      --query 'cluster.resourcesVpcConfig.publicAccessCidrs' --output json)
+
+          # 3) 없으면 추가
+          NEW_JSON=$(jq --arg ip "$MYCIDR" 'if index($ip) then . else . + [$ip] end' <<<"$CUR_JSON")
+
+          # 원복용 백업 저장
+          echo "orig=$(printf %s "$CUR_JSON" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+          if [ "$NEW_JSON" != "$CUR_JSON" ]; then
+            aws eks update-cluster-config --region "$REGION" --name "$CLUSTER" \
+              --resources-vpc-config publicAccessCidrs="$(jq -r 'join(",")' <<<"$NEW_JSON")"
+            aws eks wait cluster-active --region "$REGION" --name "$CLUSTER"
+          else
+            echo "Runner IP already allowed."
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -61,3 +95,18 @@ jobs:
           path: ${{ env.REPORT_DIR }}/
           retention-days: 14
           if-no-files-found: error
+
+      - name: Revert EKS API allowlist
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGION='${{ secrets.AWS_REGION }}'
+          CLUSTER='${{ secrets.EKS_CLUSTER_NAME }}'
+          ORIG_B64='${{ steps.allowapi.outputs.orig }}'
+          if [ -n "$ORIG_B64" ]; then
+            ORIG_JSON="$(echo "$ORIG_B64" | base64 -d)"
+            aws eks update-cluster-config --region "$REGION" --name "$CLUSTER" \
+              --resources-vpc-config publicAccessCidrs="$(jq -r 'join(",")' <<<"$ORIG_JSON")"
+            aws eks wait cluster-active --region "$REGION" --name "$CLUSTER"
+          fi
