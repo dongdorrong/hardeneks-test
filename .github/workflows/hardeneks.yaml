@@ -20,9 +20,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup AWS CLI
-        uses: aws-actions/setup-aws-cli@v2
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
