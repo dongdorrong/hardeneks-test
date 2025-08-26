@@ -80,6 +80,7 @@ jobs:
 
       - name: Run HardenEKS
         run: |
+          mkdir -p $REPORT_DIR
           hardeneks \
             --region "${{ secrets.AWS_REGION }}" \
             --cluster "${{ secrets.EKS_CLUSTER_NAME }}" \
