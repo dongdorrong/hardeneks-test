@@ -1,4 +1,4 @@
-name: HardenEKS Scan
+name: HardenEKS + Kubent Scan
 
 on:
   workflow_dispatch: {}
@@ -63,6 +63,7 @@ jobs:
             echo "Runner IP already allowed."
           fi
 
+      # HardenEKS 실행
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -77,28 +78,45 @@ jobs:
 
       - name: Run HardenEKS
         run: |
-          mkdir -p $REPORT_DIR
+          mkdir -p "$REPORT_DIR/hardeneks"
           hardeneks \
             --region "${{ secrets.AWS_REGION }}" \
             --cluster "${{ secrets.EKS_CLUSTER_NAME }}" \
             --config config/config.yaml \
-            --export-html "$REPORT_DIR/report.html" \
-            --export-json "$REPORT_DIR/report.json" \
-            --export-csv  "$REPORT_DIR/report.csv"
+            --export-html "$REPORT_DIR/hardeneks/report.html" \
+            --export-json "$REPORT_DIR/hardeneks/report.json" \
+            --export-csv  "$REPORT_DIR/hardeneks/report.csv"
 
-      - name: Upload report artifacts
+      # Kubent 설치 및 실행 (항상 최신)
+      - name: Install kubent (latest)
+        run: |
+          sh -c "$(curl -sSL https://git.io/install-kubent)"
+          kubent -v
+
+      - name: Run kubent scan
+        run: |
+          mkdir -p "$REPORT_DIR/kubent"
+          kubent -o json -O "$REPORT_DIR/kubent/kubent.json" || true
+          kubent -o csv  -O "$REPORT_DIR/kubent/kubent.csv"  || true
+
+          if jq -e 'length > 0' "$REPORT_DIR/kubent/kubent.json" >/dev/null 2>&1; then
+            echo "kubent: deprecated API usage found."
+            exit 2
+          else
+            echo "kubent: no deprecated API usage detected."
+          fi
+
+      - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
-          name: hardeneks-report-${{ secrets.EKS_CLUSTER_NAME }}
+          name: reports-${{ secrets.EKS_CLUSTER_NAME }}
           path: ${{ env.REPORT_DIR }}/
           retention-days: 14
           if-no-files-found: error
 
       - name: Revert EKS API allowlist
         if: always()
-        shell: bash
         run: |
-          set -euo pipefail
           REGION='${{ secrets.AWS_REGION }}'
           CLUSTER='${{ secrets.EKS_CLUSTER_NAME }}'
           ORIG_B64='${{ steps.allowapi.outputs.orig }}'
