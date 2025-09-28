@@ -9,6 +9,8 @@ permissions:
 
 env:
   REPORT_DIR: reports/${{ secrets.EKS_CLUSTER_NAME }}
+  # 임시로 러너 IP를 퍼블릭 엔드포인트에 추가할지 여부 (private endpoint/사전 허용이면 false)
+  ALLOWLIST: "true"
 
 jobs:
   scan:
@@ -16,13 +18,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@main
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_HARDENEKS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Who am I (debug)
+        run: aws sts get-caller-identity
+
+      - name: Install jq (for allowlist + kubent step)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
 
       - name: Update kubeconfig
         run: |
@@ -30,67 +40,64 @@ jobs:
             --region "${{ secrets.AWS_REGION }}" \
             --name   "${{ secrets.EKS_CLUSTER_NAME }}"
 
-      - name: Allow this runner IP to EKS API
+      - name: Allow this runner IP to EKS API (temp)
         id: allowapi
+        if: ${{ env.ALLOWLIST == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           REGION='${{ secrets.AWS_REGION }}'
           CLUSTER='${{ secrets.EKS_CLUSTER_NAME }}'
 
-          # 1) 러너의 공인 IP 획득
+          # 1) 러너 공인 IP
           MYIP="$(curl -fsSL ifconfig.me || curl -fsSL https://checkip.amazonaws.com || curl -fsSL https://api.ipify.org)"
           MYIP="$(echo -n "$MYIP" | tr -d '\r\n')"
           [[ "$MYIP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "Failed to detect runner IP"; exit 1; }
           MYCIDR="${MYIP}/32"
           echo "Runner IP: $MYCIDR"
+          echo "cidr=$MYCIDR" >> "$GITHUB_OUTPUT"
 
-          # 2) 현재 퍼블릭 허용 CIDR 조회
+          # 2) 현재 허용 CIDR
           CUR_JSON=$(aws eks describe-cluster --region "$REGION" --name "$CLUSTER" \
                       --query 'cluster.resourcesVpcConfig.publicAccessCidrs' --output json)
+          echo "orig=$(printf %s "$CUR_JSON" | base64 -w0)" >> "$GITHUB_OUTPUT"
 
           # 3) 없으면 추가
           NEW_JSON=$(jq --arg ip "$MYCIDR" 'if index($ip) then . else . + [$ip] end' <<<"$CUR_JSON")
-
-          # 원복용 백업 저장
-          echo "orig=$(printf %s "$CUR_JSON" | base64 -w0)" >> "$GITHUB_OUTPUT"
-
           if [ "$NEW_JSON" != "$CUR_JSON" ]; then
             aws eks update-cluster-config --region "$REGION" --name "$CLUSTER" \
               --resources-vpc-config publicAccessCidrs="$(jq -r 'join(",")' <<<"$NEW_JSON")"
             aws eks wait cluster-active --region "$REGION" --name "$CLUSTER"
+            echo "updated=true" >> "$GITHUB_OUTPUT"
           else
             echo "Runner IP already allowed."
+            echo "updated=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # HardenEKS 실행
+      # ===== HardenEKS =====
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Create venv & install HardenEKS
+      - name: Create venv & install HardenEKS (compat pinned)
         run: |
           python3 -m venv /tmp/.venv
           source /tmp/.venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install 'setuptools<81'
-          python -m pip install hardeneks
+          # 호환성: click/typer 고정 + pkg_resources 경고 억제
+          python -m pip install 'setuptools<81' 'click==8.1.7' 'typer==0.6.1'
+          # 하든EKS 버전 고정(검증된 조합)
+          python -m pip install 'hardeneks==0.11.2'
           echo "/tmp/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run HardenEKS (config 옵션 조건부)
         shell: bash
         run: |
           set -euo pipefail
-          set -x
           mkdir -p "$REPORT_DIR/hardeneks"
-      
-          # 디버그: 현재 경로, 파일 유무 확인
-          pwd
-          ls -al .
-          ls -al config || true
-      
-          # 인자 배열로 안전하게 구성
+
+          # 인자 배열 구성 (빈 인자 전달 방지)
           ARGS=( \
             --region  "${{ secrets.AWS_REGION }}" \
             --cluster "${{ secrets.EKS_CLUSTER_NAME }}" \
@@ -98,27 +105,30 @@ jobs:
             --export-json "$REPORT_DIR/hardeneks/report.json" \
             --export-csv  "$REPORT_DIR/hardeneks/report.csv" \
           )
-      
-          # config 파일이 실제로 존재하고 크기가 1바이트 이상일 때만 --config 추가
+          # config 파일이 있으면만 추가
           if [ -s "config/config.yaml" ]; then
             ARGS+=( --config "$(pwd)/config/config.yaml" )
           fi
-      
-          # 최종 실행(셸이 빈 인자를 전달하지 않도록 배열 사용)
+
           hardeneks "${ARGS[@]}"
 
-      # Kubent 설치 및 실행 (항상 최신)
+      # ===== Kubent (latest) =====
       - name: Install kubent (latest)
         run: |
           sh -c "$(curl -sSL https://git.io/install-kubent)"
           kubent -v
 
       - name: Run kubent scan
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$REPORT_DIR/kubent"
+
+          # 리포트 생성
           kubent -o json -O "$REPORT_DIR/kubent/kubent.json" || true
           kubent -o csv  -O "$REPORT_DIR/kubent/kubent.csv"  || true
 
+          # 발견 시 실패 처리 (kubent --exit-error 대신 JSON 길이로 판단)
           if jq -e 'length > 0' "$REPORT_DIR/kubent/kubent.json" >/dev/null 2>&1; then
             echo "kubent: deprecated API usage found."
             exit 2
@@ -135,8 +145,10 @@ jobs:
           if-no-files-found: error
 
       - name: Revert EKS API allowlist
-        if: always()
+        if: ${{ always() && env.ALLOWLIST == 'true' && steps.allowapi.outcome == 'success' && steps.allowapi.outputs.updated == 'true' }}
+        shell: bash
         run: |
+          set -euo pipefail
           REGION='${{ secrets.AWS_REGION }}'
           CLUSTER='${{ secrets.EKS_CLUSTER_NAME }}'
           ORIG_B64='${{ steps.allowapi.outputs.orig }}'
@@ -145,4 +157,6 @@ jobs:
             aws eks update-cluster-config --region "$REGION" --name "$CLUSTER" \
               --resources-vpc-config publicAccessCidrs="$(jq -r 'join(",")' <<<"$ORIG_JSON")"
             aws eks wait cluster-active --region "$REGION" --name "$CLUSTER"
+          else
+            echo "No original snapshot; skip revert."
           fi
