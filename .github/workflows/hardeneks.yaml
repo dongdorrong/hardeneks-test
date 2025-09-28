@@ -73,27 +73,39 @@ jobs:
         run: |
           python3 -m venv /tmp/.venv
           source /tmp/.venv/bin/activate
-          pip install hardeneks
+          python -m pip install --upgrade pip
+          python -m pip install 'setuptools<81'
+          python -m pip install hardeneks
           echo "/tmp/.venv/bin" >> "$GITHUB_PATH"
 
-      - name: Run HardenEKS
+      - name: Run HardenEKS (config 옵션 조건부)
         shell: bash
         run: |
           set -euo pipefail
+          set -x
           mkdir -p "$REPORT_DIR/hardeneks"
       
-          CFG=()
-          if [ -f config/config.yaml ]; then
-            CFG=(--config "$(pwd)/config/config.yaml")
-          fi
+          # 디버그: 현재 경로, 파일 유무 확인
+          pwd
+          ls -al .
+          ls -al config || true
       
-          hardeneks \
-            --region "${{ secrets.AWS_REGION }}" \
+          # 인자 배열로 안전하게 구성
+          ARGS=( \
+            --region  "${{ secrets.AWS_REGION }}" \
             --cluster "${{ secrets.EKS_CLUSTER_NAME }}" \
-            "${CFG[@]}" \
             --export-html "$REPORT_DIR/hardeneks/report.html" \
             --export-json "$REPORT_DIR/hardeneks/report.json" \
-            --export-csv  "$REPORT_DIR/hardeneks/report.csv"
+            --export-csv  "$REPORT_DIR/hardeneks/report.csv" \
+          )
+      
+          # config 파일이 실제로 존재하고 크기가 1바이트 이상일 때만 --config 추가
+          if [ -s "config/config.yaml" ]; then
+            ARGS+=( --config "$(pwd)/config/config.yaml" )
+          fi
+      
+          # 최종 실행(셸이 빈 인자를 전달하지 않도록 배열 사용)
+          hardeneks "${ARGS[@]}"
 
       # Kubent 설치 및 실행 (항상 최신)
       - name: Install kubent (latest)
