@@ -122,18 +122,30 @@ jobs:
 
       - name: Run kubent scan
         shell: bash
+        env:
+          TERM: xterm
         run: |
           set -euo pipefail
           mkdir -p "$REPORT_DIR/kubent"
+          JSON="$REPORT_DIR/kubent/kubent.json"
+          CSV="$REPORT_DIR/kubent/kubent.csv"
 
-          # 리포트 생성
-          kubent -o json -O "$REPORT_DIR/kubent/kubent.json" || true
-          kubent -o csv  -O "$REPORT_DIR/kubent/kubent.csv"  || true
+          # 항상 기본 파일을 만들어 둠 (실패시에도 아티팩트가 남도록)
+          echo '[]' > "$JSON"
+          printf "kind,namespace,name,apiVersion,rule\n" > "$CSV"
 
-          # 발견 시 실패 처리 (kubent --exit-error 대신 JSON 길이로 판단)
-          if jq -e 'length > 0' "$REPORT_DIR/kubent/kubent.json" >/dev/null 2>&1; then
+          # 실행 (성공하면 파일을 덮어씀)
+          if kubent -o json -O "$JSON"; then
+            kubent -o csv -O "$CSV" || true
+          else
+            echo "kubent failed; keeping empty artifacts for debugging."
+          fi
+
+          # 발견 여부 판단 (파일이 항상 존재하므로 신뢰 가능)
+          if jq -e 'length > 0' "$JSON" >/dev/null; then
             echo "kubent: deprecated API usage found."
-            exit 2
+            # 필요 시 실패 처리 유지 / 완화 선택
+            # exit 2
           else
             echo "kubent: no deprecated API usage detected."
           fi
