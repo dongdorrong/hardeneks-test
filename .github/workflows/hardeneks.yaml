@@ -82,7 +82,7 @@ jobs:
           hardeneks \
             --region "${{ secrets.AWS_REGION }}" \
             --cluster "${{ secrets.EKS_CLUSTER_NAME }}" \
-            --config config/config.yaml \
+            --config "$(pwd)/config/config.yaml" \
             --export-html "$REPORT_DIR/hardeneks/report.html" \
             --export-json "$REPORT_DIR/hardeneks/report.json" \
             --export-csv  "$REPORT_DIR/hardeneks/report.csv"
