@@ -114,8 +114,10 @@ jobs:
 
       # ===== Kubent (latest) =====
       - name: Install kubent (latest)
+        env:
+          TERM: xterm
         run: |
-          sh -c "$(curl -sSL https://git.io/install-kubent)"
+          curl -fsSL https://raw.githubusercontent.com/doitintl/kube-no-trouble/master/scripts/install.sh | sh
           kubent -v
 
       - name: Run kubent scan
