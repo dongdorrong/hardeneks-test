@@ -77,12 +77,20 @@ jobs:
           echo "/tmp/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run HardenEKS
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$REPORT_DIR/hardeneks"
+      
+          CFG=()
+          if [ -f config/config.yaml ]; then
+            CFG=(--config "$(pwd)/config/config.yaml")
+          fi
+      
           hardeneks \
             --region "${{ secrets.AWS_REGION }}" \
             --cluster "${{ secrets.EKS_CLUSTER_NAME }}" \
-            --config "$(pwd)/config/config.yaml" \
+            "${CFG[@]}" \
             --export-html "$REPORT_DIR/hardeneks/report.html" \
             --export-json "$REPORT_DIR/hardeneks/report.json" \
             --export-csv  "$REPORT_DIR/hardeneks/report.csv"
